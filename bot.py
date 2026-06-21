@@ -6,6 +6,7 @@ import yt_dlp
 
 TOKEN = os.getenv("BOT_TOKEN")
 API = f"https://api.telegram.org/bot{TOKEN}"
+print("TOKEN:", TOKEN)
 
 user_data = {}
 
@@ -146,4 +147,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-print("TOKEN:", TOKEN)
+
