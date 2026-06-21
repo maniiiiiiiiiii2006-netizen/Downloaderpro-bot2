@@ -1,114 +1,85 @@
 import os
-import re
 import logging
-import requests
+import re
 import yt_dlp
+import requests
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+
+# ---------------- LOGGING ----------------
+logging.basicConfig(
+    format='[%(levelname)s] %(message)s',
+    level=logging.INFO
+)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-logging.basicConfig(level=logging.INFO)
+if not BOT_TOKEN:
+    print("[ERROR] BOT_TOKEN is missing!")
+    exit()
 
-# -----------------------------
-# LOG MESSAGE
-# -----------------------------
-def log(msg):
-    print(f"[LOG] {msg}")
+print("[LOG] Bot starting...")
 
-
-# -----------------------------
-# DOWNLOAD PROGRESS
-# -----------------------------
-def progress_hook(d):
-    if d['status'] == 'downloading':
-        print(f"⬇️ {d['_percent_str']} | {d['_eta_str']} | {d['_speed_str']}")
-    elif d['status'] == 'finished':
-        print("✅ Download finished:", d['filename'])
+# ---------------- URL DETECTOR ----------------
+def extract_url(text: str):
+    urls = re.findall(r'https?://\S+', text)
+    return urls[0] if urls else None
 
 
-# -----------------------------
-# DOWNLOAD FUNCTION
-# -----------------------------
-def download_video(url):
-    log(f"Starting download: {url}")
+# ---------------- DOWNLOAD (NO FFMPEG) ----------------
+def download_video(url: str):
+    print(f"[LOG] Downloading: {url}")
 
     ydl_opts = {
-        'format': 'best',
-        'outtmpl': '%(title)s.%(ext)s',
-        'progress_hooks': [progress_hook],
+        'format': 'best[ext=mp4]/best',   # 👈 بدون merge => بدون ffmpeg
+        'outtmpl': 'downloads/%(title).50s.%(ext)s',
+        'noplaylist': True,
         'quiet': False,
         'no_warnings': False,
     }
 
+    os.makedirs("downloads", exist_ok=True)
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
+            file_path = ydl.prepare_filename(info)
 
-        log(f"Download complete file: {filename}")
-        return filename
+        print(f"[LOG] Downloaded file: {file_path}")
+        return file_path
 
     except Exception as e:
-        log(f"DOWNLOAD ERROR: {e}")
+        print(f"[ERROR] Download failed: {e}")
         return None
 
 
-# -----------------------------
-# SEND VIDEO
-# -----------------------------
-def send_video(chat_id, file_path):
-    log(f"Sending file: {file_path}")
-
-    if not file_path or not os.path.exists(file_path):
-        log("FILE NOT FOUND!")
-        requests.post(API + "/sendMessage", data={
-            "chat_id": chat_id,
-            "text": "❌ فایل پیدا نشد یا دانلود انجام نشد"
-        })
-        return
-
+# ---------------- SEND TO TELEGRAM ----------------
+async def send_video(update: Update, file_path: str):
     try:
-        with open(file_path, "rb") as f:
-            r = requests.post(
-                API + "/sendVideo",
-                data={"chat_id": chat_id},
-                files={"video": f}
-            )
+        print("[LOG] Sending video to Telegram...")
 
-        log(f"Telegram response: {r.text}")
+        with open(file_path, "rb") as f:
+            await update.message.reply_video(video=f)
+
+        print("[LOG] Sent successfully!")
 
     except Exception as e:
-        log(f"SEND ERROR: {e}")
+        print(f"[ERROR] Send failed: {e}")
+        await update.message.reply_text(f"❌ Send failed: {e}")
 
 
-# -----------------------------
-# URL DETECTOR
-# -----------------------------
-def extract_url(text):
-    urls = re.findall(r'(https?://\S+)', text)
-    return urls[0] if urls else None
-
-
-# -----------------------------
-# MESSAGE HANDLER
-# -----------------------------
+# ---------------- HANDLER ----------------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    chat_id = update.message.chat_id
-
-    log(f"Message received: {text}")
-
-    await update.message.reply_text("⏳ در حال پردازش...")
+    print(f"[LOG] Message received: {text}")
 
     url = extract_url(text)
 
     if not url:
-        await update.message.reply_text("❌ لینک معتبر پیدا نشد")
+        await update.message.reply_text("❌ لینک پیدا نشد")
         return
 
-    log(f"URL extracted: {url}")
+    await update.message.reply_text("⏳ در حال دانلود...")
 
     file_path = download_video(url)
 
@@ -116,22 +87,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ دانلود ناموفق بود")
         return
 
-    send_video(chat_id, file_path)
+    await update.message.reply_text("📤 در حال ارسال...")
 
-    await update.message.reply_text("✅ کار انجام شد")
+    await send_video(update, file_path)
 
 
-# -----------------------------
-# MAIN
-# -----------------------------
+# ---------------- START COMMAND ----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 سلام!\n"
+        "لینک یوتیوب یا اینستا بفرست تا دانلود کنم 🚀"
+    )
+
+
+# ---------------- MAIN ----------------
 def main():
-    log("Bot starting...")
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    log("Bot is running...")
+    print("[LOG] Bot is running...")
     app.run_polling()
 
 
