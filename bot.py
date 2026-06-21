@@ -5,7 +5,6 @@ import yt_dlp
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
 
-# ---------------- LOG ----------------
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -31,11 +30,8 @@ def detect(url):
     return "unknown"
 
 
-# ---------------- DOWNLOAD CORE (SMART + RETRY) ----------------
+# ---------------- DOWNLOAD ENGINE (INSTAGRAM FIXED) ----------------
 def download(url):
-    platform = detect(url)
-    print(f"[LOG] Platform: {platform}")
-
     os.makedirs("downloads", exist_ok=True)
 
     base_opts = {
@@ -45,11 +41,15 @@ def download(url):
         "no_warnings": True,
     }
 
-    # 🔥 METHOD 1 (best mp4 no ffmpeg)
+    # ===================== METHOD 1 (INSTAGRAM COOKIES) =====================
     try:
-        print("[LOG] Try method 1: best mp4")
+        print("[LOG] Method 1: cookies + best mp4")
+
         opts = base_opts.copy()
-        opts["format"] = "best[ext=mp4]/best"
+        opts.update({
+            "format": "best[ext=mp4]/best",
+            "cookiefile": "cookies.txt",   # 🔥 مهم‌ترین بخش
+        })
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -60,11 +60,14 @@ def download(url):
     except Exception as e:
         print(f"[WARN] Method 1 failed: {e}")
 
-    # 🔥 METHOD 2 (more aggressive)
+    # ===================== METHOD 2 (NO COOKIES) =====================
     try:
-        print("[LOG] Try method 2: best available")
+        print("[LOG] Method 2: fallback no cookies")
+
         opts = base_opts.copy()
-        opts["format"] = "best"
+        opts.update({
+            "format": "best",
+        })
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -82,20 +85,20 @@ def download(url):
 async def send(update: Update, file_path: str):
     try:
         size = os.path.getsize(file_path) / (1024 * 1024)
-        print(f"[LOG] Size: {size:.2f}MB")
+        print(f"[LOG] file size: {size:.2f} MB")
 
         if size > 45:
-            await update.message.reply_text("❌ فایل خیلی بزرگه برای تلگرام")
+            await update.message.reply_text("❌ فایل بزرگه (تلگرام محدودیت داره)")
             return
 
         with open(file_path, "rb") as f:
             await update.message.reply_video(video=f)
 
-        print("[LOG] Sent OK")
+        print("[LOG] SENT OK")
 
     except Exception as e:
-        print(f"[ERROR] Send failed: {e}")
-        await update.message.reply_text(f"❌ ارسال ناموفق: {e}")
+        print(f"[ERROR] SEND FAILED: {e}")
+        await update.message.reply_text(f"❌ خطا در ارسال: {e}")
 
 
 # ---------------- HANDLER ----------------
@@ -116,7 +119,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = download(url)
 
     if not file:
-        await update.message.reply_text("❌ دانلود شکست خورد (این لینک محدود شده)")
+        await update.message.reply_text("❌ دانلود ناموفق (محدودیت اینستا)")
         return
 
     await update.message.reply_text("📤 در حال ارسال...")
@@ -127,8 +130,8 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔥 Bot PRO MAX فعال شد\n"
-        "لینک YouTube / Instagram (Reels / Post) بفرست 🚀"
+        "🔥 PRO MAX Bot فعال شد\n"
+        "لینک YouTube / Instagram Reels / Post بفرست 🚀"
     )
 
 
@@ -139,7 +142,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    print("[LOG] Running...")
+    print("[LOG] RUNNING...")
     app.run_polling()
 
 
