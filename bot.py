@@ -1,139 +1,147 @@
 import os
 import re
 import uuid
-import asyncio
+import requests
 import yt_dlp
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters
-)
+TOKEN = os.getenv("BOT_TOKEN")
+API = f"https://api.telegram.org/bot{TOKEN}"
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+user_data = {}
 
-# ---------------- UTIL ----------------
+# ---------------- Telegram API ----------------
+
+def send_message(chat_id, text, reply_markup=None):
+    data = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        data["reply_markup"] = reply_markup
+    requests.post(API + "/sendMessage", json=data)
+
+
+def send_video(chat_id, path):
+    with open(path, "rb") as f:
+        requests.post(API + "/sendVideo", files={"video": f}, data={"chat_id": chat_id})
+
+
+def send_audio(chat_id, path):
+    with open(path, "rb") as f:
+        requests.post(API + "/sendAudio", files={"audio": f}, data={"chat_id": chat_id})
+
+
+# ---------------- Helpers ----------------
 
 def extract_url(text):
-    urls = re.findall(r'https?://\S+', text)
-    return urls[0] if urls else None
+    match = re.search(r"https?://\S+", text)
+    return match.group() if match else None
 
 
-def get_platform(url):
-    if "youtube.com" in url or "youtu.be" in url:
-        return "youtube"
-    if "instagram.com" in url:
-        return "instagram"
-    return "unknown"
+# ---------------- Download ----------------
 
+def download(url, mode):
+    name = f"file_{uuid.uuid4().hex[:8]}"
 
-# ---------------- START ----------------
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 سلام!\n\nلینک یوتیوب یا اینستا بفرست 😎"
-    )
-
-
-# ---------------- MESSAGE ----------------
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = extract_url(update.message.text)
-
-    if not url:
-        await update.message.reply_text("❌ لینک پیدا نشد")
-        return
-
-    platform = get_platform(url)
-
-    if platform == "unknown":
-        await update.message.reply_text("❌ لینک پشتیبانی نمی‌شود")
-        return
-
-    context.user_data["url"] = url
-
-    if platform == "youtube":
-        keyboard = [
-            [
-                InlineKeyboardButton("720p", callback_data="yt_720"),
-                InlineKeyboardButton("480p", callback_data="yt_480"),
-            ],
-            [InlineKeyboardButton("MP3", callback_data="yt_mp3")]
-        ]
+    if mode == "720":
+        opts = {"format": "best[height<=720]", "outtmpl": f"{name}.%(ext)s"}
+    elif mode == "480":
+        opts = {"format": "best[height<=480]", "outtmpl": f"{name}.%(ext)s"}
     else:
-        keyboard = [[InlineKeyboardButton("Download", callback_data="ig")]]
+        opts = {
+            "format": "bestaudio/best",
+            "outtmpl": f"{name}.%(ext)s",
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
+        }
 
-    await update.message.reply_text(
-        f"📥 {platform} detected",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
 
+    for f in os.listdir():
+        if f.startswith(name):
+            return f
 
-# ---------------- DOWNLOAD ----------------
-
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    url = context.user_data.get("url")
-
-    job_id = str(uuid.uuid4())[:8]
-    base = f"dl_{job_id}"
-
-    await q.message.reply_text("⏳ در حال دانلود...")
-
-    try:
-        if q.data == "yt_720":
-            opts = {"format": "best[height<=720]", "outtmpl": f"{base}.%(ext)s"}
-
-        elif q.data == "yt_480":
-            opts = {"format": "best[height<=480]", "outtmpl": f"{base}.%(ext)s"}
-
-        elif q.data == "yt_mp3":
-            opts = {
-                "format": "bestaudio/best",
-                "outtmpl": f"{base}.%(ext)s",
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }]
-            }
-
-        else:
-            opts = {"format": "best", "outtmpl": f"{base}.%(ext)s"}
-
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
-
-        for f in os.listdir():
-            if f.startswith(base):
-                with open(f, "rb") as file:
-                    if f.endswith(".mp3"):
-                        await q.message.reply_audio(file)
-                    else:
-                        await q.message.reply_video(file)
-                os.remove(f)
-                break
-
-    except Exception as e:
-        await q.message.reply_text(f"❌ Error:\n{e}")
+    return None
 
 
-# ---------------- MAIN ----------------
+# ---------------- Bot Loop ----------------
+
+def get_updates(offset=None):
+    url = API + "/getUpdates"
+    params = {"timeout": 30, "offset": offset}
+    return requests.get(url, params=params).json()
+
 
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    offset = None
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(handle_button))
+    print("Bot started...")
 
-    app.run_polling()
+    while True:
+        updates = get_updates(offset)
+
+        for update in updates["result"]:
+            offset = update["update_id"] + 1
+
+            msg = update.get("message")
+            if not msg:
+                continue
+
+            chat_id = msg["chat"]["id"]
+            text = msg.get("text", "")
+
+            # start
+            if text == "/start":
+                send_message(chat_id, "👋 سلام!\nلینک یوتیوب یا اینستا بفرست")
+                continue
+
+            url = extract_url(text)
+
+            if url:
+                user_data[chat_id] = url
+
+                keyboard = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "720p", "callback_data": "720"},
+                            {"text": "480p", "callback_data": "480"}
+                        ],
+                        [
+                            {"text": "MP3", "callback_data": "mp3"}
+                        ]
+                    ]
+                }
+
+                send_message(chat_id, "📥 چی میخوای؟", keyboard)
+
+            # callback handling
+            if "callback_query" in update:
+                cq = update["callback_query"]
+                chat_id = cq["message"]["chat"]["id"]
+                data = cq["data"]
+
+                url = user_data.get(chat_id)
+                if not url:
+                    send_message(chat_id, "❌ لینک پیدا نشد")
+                    continue
+
+                send_message(chat_id, "⏳ در حال دانلود...")
+
+                if data == "720":
+                    file = download(url, "720")
+                    send_video(chat_id, file)
+
+                elif data == "480":
+                    file = download(url, "480")
+                    send_video(chat_id, file)
+
+                else:
+                    file = download(url, "mp3")
+                    send_audio(chat_id, file)
+
+                if file:
+                    os.remove(file)
 
 
 if __name__ == "__main__":
