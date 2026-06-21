@@ -1,77 +1,107 @@
 import os
-import logging
 import re
+import logging
 import yt_dlp
-import requests
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
 
-# ---------------- LOGGING ----------------
-logging.basicConfig(
-    format='[%(levelname)s] %(message)s',
-    level=logging.INFO
-)
+# ---------------- LOG ----------------
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
 
-if not BOT_TOKEN:
-    print("[ERROR] BOT_TOKEN is missing!")
+if not TOKEN:
+    print("[ERROR] BOT_TOKEN missing")
     exit()
 
-print("[LOG] Bot starting...")
+print("[LOG] Bot started...")
 
-# ---------------- URL DETECTOR ----------------
-def extract_url(text: str):
-    urls = re.findall(r'https?://\S+', text)
-    return urls[0] if urls else None
+# ---------------- URL ----------------
+def extract_url(text):
+    match = re.findall(r'https?://\S+', text)
+    return match[0] if match else None
 
 
-# ---------------- DOWNLOAD (NO FFMPEG) ----------------
-def download_video(url: str):
-    print(f"[LOG] Downloading: {url}")
+# ---------------- PLATFORM ----------------
+def detect(url):
+    if "youtube.com" in url or "youtu.be" in url:
+        return "youtube"
+    if "instagram.com" in url:
+        return "instagram"
+    return "unknown"
 
-    ydl_opts = {
-        'format': 'best[ext=mp4]/best',   # 👈 بدون merge => بدون ffmpeg
-        'outtmpl': 'downloads/%(title).50s.%(ext)s',
-        'noplaylist': True,
-        'quiet': False,
-        'no_warnings': False,
-    }
+
+# ---------------- DOWNLOAD CORE (SMART + RETRY) ----------------
+def download(url):
+    platform = detect(url)
+    print(f"[LOG] Platform: {platform}")
 
     os.makedirs("downloads", exist_ok=True)
 
+    base_opts = {
+        "outtmpl": "downloads/%(title).50s.%(ext)s",
+        "noplaylist": True,
+        "quiet": False,
+        "no_warnings": True,
+    }
+
+    # 🔥 METHOD 1 (best mp4 no ffmpeg)
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        print("[LOG] Try method 1: best mp4")
+        opts = base_opts.copy()
+        opts["format"] = "best[ext=mp4]/best"
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             file_path = ydl.prepare_filename(info)
 
-        print(f"[LOG] Downloaded file: {file_path}")
         return file_path
 
     except Exception as e:
-        print(f"[ERROR] Download failed: {e}")
-        return None
+        print(f"[WARN] Method 1 failed: {e}")
 
-
-# ---------------- SEND TO TELEGRAM ----------------
-async def send_video(update: Update, file_path: str):
+    # 🔥 METHOD 2 (more aggressive)
     try:
-        print("[LOG] Sending video to Telegram...")
+        print("[LOG] Try method 2: best available")
+        opts = base_opts.copy()
+        opts["format"] = "best"
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            file_path = ydl.prepare_filename(info)
+
+        return file_path
+
+    except Exception as e:
+        print(f"[ERROR] Method 2 failed: {e}")
+
+    return None
+
+
+# ---------------- SEND ----------------
+async def send(update: Update, file_path: str):
+    try:
+        size = os.path.getsize(file_path) / (1024 * 1024)
+        print(f"[LOG] Size: {size:.2f}MB")
+
+        if size > 45:
+            await update.message.reply_text("❌ فایل خیلی بزرگه برای تلگرام")
+            return
 
         with open(file_path, "rb") as f:
             await update.message.reply_video(video=f)
 
-        print("[LOG] Sent successfully!")
+        print("[LOG] Sent OK")
 
     except Exception as e:
         print(f"[ERROR] Send failed: {e}")
-        await update.message.reply_text(f"❌ Send failed: {e}")
+        await update.message.reply_text(f"❌ ارسال ناموفق: {e}")
 
 
 # ---------------- HANDLER ----------------
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    print(f"[LOG] Message received: {text}")
+    print(f"[LOG] MSG: {text}")
 
     url = extract_url(text)
 
@@ -79,35 +109,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ لینک پیدا نشد")
         return
 
-    await update.message.reply_text("⏳ در حال دانلود...")
+    platform = detect(url)
 
-    file_path = download_video(url)
+    await update.message.reply_text(f"⏳ دانلود از {platform} ...")
 
-    if not file_path:
-        await update.message.reply_text("❌ دانلود ناموفق بود")
+    file = download(url)
+
+    if not file:
+        await update.message.reply_text("❌ دانلود شکست خورد (این لینک محدود شده)")
         return
 
     await update.message.reply_text("📤 در حال ارسال...")
 
-    await send_video(update, file_path)
+    await send(update, file)
 
 
-# ---------------- START COMMAND ----------------
+# ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 سلام!\n"
-        "لینک یوتیوب یا اینستا بفرست تا دانلود کنم 🚀"
+        "🔥 Bot PRO MAX فعال شد\n"
+        "لینک YouTube / Instagram (Reels / Post) بفرست 🚀"
     )
 
 
 # ---------------- MAIN ----------------
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    print("[LOG] Bot is running...")
+    print("[LOG] Running...")
     app.run_polling()
 
 
