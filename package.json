@@ -1,0 +1,13 @@
+{
+  "name": "ultra-bot",
+  "version": "1.0.0",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "yt-dlp-exec": "^2.2.0",
+    "fs-extra": "^11.2.0"
+  }
+}
